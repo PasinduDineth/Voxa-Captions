@@ -1,0 +1,143 @@
+"""
+Voxa-Captions Architecture Diagram
+
+┌─────────────────────────────────────────────────────────────────────┐
+│                         Voxa-Captions                                │
+│                  Offline Caption Generator App                       │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│                          User Interface Layer                        │
+│                                                                       │
+│  ┌───────────────────────────────────────────────────────────────┐  │
+│  │        caption_generator_app.py (PyQt6 GUI)                   │  │
+│  │                                                                │  │
+│  │  • File Browser                                                │  │
+│  │  • Model Selection (tiny/base/small/medium/large-v3)          │  │
+│  │  • Language Selection (auto/en/es/fr/de/...)                  │  │
+│  │  • Progress Bar & Status Log                                  │  │
+│  │  • Generate Button                                             │  │
+│  └───────────────────────────────────────────────────────────────┘  │
+│                              ↓                                       │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│                      Transcription Layer                             │
+│                                                                       │
+│  ┌───────────────────────────────────────────────────────────────┐  │
+│  │        transcription_engine.py                                │  │
+│  │                                                                │  │
+│  │  Step 1: Audio Conversion                                     │  │
+│  │  ┌────────────────────────────────────────────┐              │  │
+│  │  │  FFmpeg: audio → 16kHz WAV                 │              │  │
+│  │  │  (MP3/M4A/FLAC/OGG → WAV)                 │              │  │
+│  │  └────────────────────────────────────────────┘              │  │
+│  │                   ↓                                            │  │
+│  │  Step 2: Transcription                                        │  │
+│  │  ┌────────────────────────────────────────────┐              │  │
+│  │  │  Whisper.cpp: WAV → JSON                   │              │  │
+│  │  │  (main.exe + ggml model)                   │              │  │
+│  │  └────────────────────────────────────────────┘              │  │
+│  │                   ↓                                            │  │
+│  │  Step 3: Format Conversion                                    │  │
+│  │  ┌────────────────────────────────────────────┐              │  │
+│  │  │  Parse & Convert to Caption Format         │              │  │
+│  │  │  (word-level timestamps)                   │              │  │
+│  │  └────────────────────────────────────────────┘              │  │
+│  └───────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│                         Local Storage Layer                          │
+│                                                                       │
+│  ┌───────────────────────────────────────────────────────────────┐  │
+│  │  models/                                                       │  │
+│  │  ├── main.exe              (Whisper.cpp executable)           │  │
+│  │  ├── whisper.dll           (Dependencies)                     │  │
+│  │  ├── ggml-tiny.bin         (75 MB model)                      │  │
+│  │  ├── ggml-base.bin         (142 MB model)                     │  │
+│  │  ├── ggml-small.bin        (466 MB model)                     │  │
+│  │  ├── ggml-medium.bin       (1.5 GB model)                     │  │
+│  │  └── ggml-large-v3.bin     (2.9 GB model)                     │  │
+│  └───────────────────────────────────────────────────────────────┘  │
+│                                                                       │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│                         Setup & Build Layer                          │
+│                                                                       │
+│  ┌───────────────────────────────────────────────────────────────┐  │
+│  │  download_models.py                                            │  │
+│  │  • Downloads Whisper.cpp binaries (pre-compiled)              │  │
+│  │  • Downloads selected Whisper models                          │  │
+│  │  • Saves everything to models/ folder                         │  │
+│  └───────────────────────────────────────────────────────────────┘  │
+│                                                                       │
+│  ┌───────────────────────────────────────────────────────────────┐  │
+│  │  build.ps1 / PyInstaller                                      │  │
+│  │  • Bundles Python app into .exe                               │  │
+│  │  • Includes all dependencies                                  │  │
+│  │  • Creates standalone executable                              │  │
+│  └───────────────────────────────────────────────────────────────┘  │
+│                                                                       │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│                            Data Flow                                 │
+│                                                                       │
+│  User Input                                                          │
+│      ↓                                                                │
+│  Audio File (MP3/WAV/M4A/...)                                        │
+│      ↓                                                                │
+│  FFmpeg Conversion                                                   │
+│      ↓                                                                │
+│  16kHz WAV                                                           │
+│      ↓                                                                │
+│  Whisper.cpp Transcription                                           │
+│      ↓                                                                │
+│  Raw JSON Output                                                     │
+│      ↓                                                                │
+│  Caption Format Conversion                                           │
+│      ↓                                                                │
+│  Final JSON Output                                                   │
+│      ↓                                                                │
+│  Saved Next to Source File                                           │
+│                                                                       │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│                      Output JSON Format                              │
+│                                                                       │
+│  [                                                                   │
+│    {                                                                 │
+│      "text": "Hello",                                                │
+│      "startMs": 0,                                                   │
+│      "endMs": 500,                                                   │
+│      "timestampMs": 0,                                               │
+│      "confidence": 0.98                                              │
+│    },                                                                │
+│    {                                                                 │
+│      "text": " world",                                               │
+│      "startMs": 500,                                                 │
+│      "endMs": 1200,                                                  │
+│      "timestampMs": 500,                                             │
+│      "confidence": 0.95                                              │
+│    }                                                                 │
+│  ]                                                                   │
+│                                                                       │
+│  Compatible with: Video editors, subtitle tools, animation systems  │
+│                                                                       │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│                     Offline Architecture Benefits                    │
+│                                                                       │
+│  ✅ No Internet Required     - Works completely offline              │
+│  ✅ Privacy Protected        - Audio never leaves your computer      │
+│  ✅ Fast Processing          - No API call delays                    │
+│  ✅ No Usage Limits          - Process unlimited files               │
+│  ✅ No Costs                 - Free after initial setup              │
+│  ✅ Portable                 - Single .exe + models folder           │
+│                                                                       │
+└─────────────────────────────────────────────────────────────────────┘
+"""
