@@ -153,9 +153,9 @@ class TranscriptionEngine:
                 str(self.whisper_exe),
                 "-m", str(self.model_path),
                 "-f", wav_path,
-                "--output-json",  # JSON output format
+                "-oj",  # Output JSON
+                "-ojf",  # Output JSON with full details including word timestamps
                 "-ml", "1",  # Max line length (word-level)
-                "-oj",  # Output JSON with timestamps
                 "-l", language,  # Language (can be 'auto' for auto-detect)
             ]
             
@@ -230,25 +230,59 @@ class TranscriptionEngine:
             
             captions = []
             
+            # Debug: Save a copy of the whisper output for inspection if captions end up empty
+            debug_json_path = Path(wav_path).with_suffix('.wav.debug.json')
+            
             # Extract transcription segments
+            # whisper.cpp JSON format has a 'transcription' array with segments
             if 'transcription' in whisper_data:
                 for segment in whisper_data['transcription']:
-                    if 'timestamps' in segment and 'word' in segment['timestamps']:
-                        # Word-level timestamps
-                        for word_data in segment['timestamps']['word']:
+                    # whisper.cpp with -ojf creates 'tokens' array with word-level timestamps
+                    if 'tokens' in segment:
+                        for token_data in segment['tokens']:
+                            # Skip special tokens (like [_TT_xxx], [_BEG_], etc.)
+                            token_text = token_data.get('text', '')
+                            if (token_text.startswith('[_') and token_text.endswith(']')) or not token_text.strip():
+                                continue
+                            
+                            # Get offsets (in milliseconds)
+                            offsets = token_data.get('offsets', {})
+                            start_ms = offsets.get('from', 0)
+                            end_ms = offsets.get('to', 0)
+                            
                             caption = {
-                                "text": word_data.get('word', ''),
-                                "startMs": int(word_data.get('from', 0) * 1000),
-                                "endMs": int(word_data.get('to', 0) * 1000),
-                                "timestampMs": int(word_data.get('from', 0) * 1000),
-                                "confidence": word_data.get('confidence', 0.0)
+                                "text": token_text,
+                                "startMs": start_ms,
+                                "endMs": end_ms,
+                                "timestampMs": start_ms,
+                                "confidence": token_data.get('p', 0.95)
                             }
                             captions.append(caption)
+                    
+                    # Check for word-level timestamps (alternative format)
+                    elif 'words' in segment:
+                        for word_data in segment['words']:
+                            caption = {
+                                "text": word_data.get('word', word_data.get('text', '')),
+                                "startMs": int(word_data.get('start', word_data.get('t0', 0)) * 1000),
+                                "endMs": int(word_data.get('end', word_data.get('t1', 0)) * 1000),
+                                "timestampMs": int(word_data.get('start', word_data.get('t0', 0)) * 1000),
+                                "confidence": word_data.get('confidence', word_data.get('p', 0.95))
+                            }
+                            captions.append(caption)
+                    
+                    # Fallback: Use segment offsets with text splitting
                     elif 'text' in segment:
-                        # Fallback to segment-level if word-level not available
-                        words = segment['text'].strip().split()
-                        start_ms = int(segment.get('offset', 0) * 1000)
-                        end_ms = int((segment.get('offset', 0) + segment.get('duration', 0)) * 1000)
+                        text = segment['text'].strip()
+                        if not text:
+                            continue
+                            
+                        words = text.split()
+                        # Get segment timing from offsets (in milliseconds)
+                        offsets = segment.get('offsets', {})
+                        start_ms = offsets.get('from', 0)
+                        end_ms = offsets.get('to', 0)
+                        
                         duration_per_word = (end_ms - start_ms) / max(len(words), 1)
                         
                         for i, word in enumerate(words):
@@ -263,6 +297,20 @@ class TranscriptionEngine:
                                 "confidence": 0.95  # Default confidence
                             }
                             captions.append(caption)
+            
+            # If no captions were extracted, save debug info
+            if len(captions) == 0:
+                try:
+                    with open(debug_json_path, 'w', encoding='utf-8') as f:
+                        json.dump(whisper_data, f, indent=2, ensure_ascii=False)
+                    raise RuntimeError(
+                        f"No captions extracted from whisper output. "
+                        f"Debug file saved to: {debug_json_path}\n"
+                        f"Whisper data keys: {list(whisper_data.keys())}\n"
+                        f"Please check the debug file to see the actual whisper.cpp output format."
+                    )
+                except json.JSONDecodeError:
+                    pass
             
             # Clean up JSON file
             try:
