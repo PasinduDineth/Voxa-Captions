@@ -23,37 +23,78 @@ class TranscriptionThread(QThread):
     
     progress = pyqtSignal(str)
     finished = pyqtSignal(bool, str)
+    file_completed = pyqtSignal(int, int, str)  # current, total, filename
     
-    def __init__(self, audio_path, model_name, language):
+    def __init__(self, audio_paths, model_name, language):
         super().__init__()
-        self.audio_path = audio_path
+        self.audio_paths = audio_paths if isinstance(audio_paths, list) else [audio_paths]
         self.model_name = model_name
         self.language = language
         self.engine = None
         
     def run(self):
+        total_files = len(self.audio_paths)
+        successful_files = []
+        failed_files = []
+        
         try:
             self.progress.emit("Initializing transcription engine...")
             self.engine = TranscriptionEngine(model_name=self.model_name)
             
-            self.progress.emit("Loading audio file...")
-            self.progress.emit(f"Audio: {os.path.basename(self.audio_path)}")
+            for idx, audio_path in enumerate(self.audio_paths, 1):
+                try:
+                    self.progress.emit("=" * 60)
+                    self.progress.emit(f"Processing file {idx} of {total_files}")
+                    self.progress.emit(f"File: {os.path.basename(audio_path)}")
+                    self.progress.emit("=" * 60)
+                    
+                    self.progress.emit("Loading audio file...")
+                    
+                    self.progress.emit("Transcribing audio (this may take a while)...")
+                    captions = self.engine.transcribe_audio(audio_path, language=self.language)
+                    
+                    # Auto-save JSON file in same directory with same name
+                    output_path = Path(audio_path).with_suffix('.json')
+                    self.progress.emit(f"Saving captions to: {output_path.name}")
+                    
+                    with open(output_path, 'w', encoding='utf-8') as f:
+                        json.dump(captions, f, indent=2, ensure_ascii=False)
+                    
+                    self.progress.emit(f"✓ Successfully generated {len(captions)} caption segments!")
+                    self.progress.emit(f"✓ Saved to: {output_path}")
+                    successful_files.append(os.path.basename(audio_path))
+                    self.file_completed.emit(idx, total_files, os.path.basename(audio_path))
+                    
+                except Exception as e:
+                    error_msg = f"✗ Error processing {os.path.basename(audio_path)}: {str(e)}"
+                    self.progress.emit(error_msg)
+                    failed_files.append(os.path.basename(audio_path))
             
-            self.progress.emit("Transcribing audio (this may take a while)...")
-            captions = self.engine.transcribe_audio(self.audio_path, language=self.language)
+            # Final summary
+            self.progress.emit("")
+            self.progress.emit("=" * 60)
+            self.progress.emit("BATCH PROCESSING COMPLETED")
+            self.progress.emit("=" * 60)
+            self.progress.emit(f"Total files: {total_files}")
+            self.progress.emit(f"Successful: {len(successful_files)}")
+            self.progress.emit(f"Failed: {len(failed_files)}")
             
-            # Save JSON file
-            output_path = Path(self.audio_path).with_suffix('.json')
-            self.progress.emit(f"Saving captions to: {output_path.name}")
+            if successful_files:
+                self.progress.emit("\nSuccessfully processed:")
+                for filename in successful_files:
+                    self.progress.emit(f"  ✓ {filename}")
             
-            with open(output_path, 'w', encoding='utf-8') as f:
-                json.dump(captions, f, indent=2, ensure_ascii=False)
+            if failed_files:
+                self.progress.emit("\nFailed to process:")
+                for filename in failed_files:
+                    self.progress.emit(f"  ✗ {filename}")
             
-            self.progress.emit(f"✓ Successfully generated {len(captions)} caption segments!")
-            self.finished.emit(True, str(output_path))
+            success = len(failed_files) == 0
+            summary = f"{len(successful_files)}/{total_files} files processed successfully"
+            self.finished.emit(success, summary)
             
         except Exception as e:
-            error_msg = f"Error during transcription: {str(e)}"
+            error_msg = f"Error during batch transcription: {str(e)}"
             self.progress.emit(error_msg)
             self.finished.emit(False, error_msg)
 
@@ -63,7 +104,7 @@ class VoxaCaptionsApp(QMainWindow):
     
     def __init__(self):
         super().__init__()
-        self.audio_path = None
+        self.audio_paths = []  # Changed to list for batch processing
         self.transcription_thread = None
         
         # Check and download models if needed
@@ -240,14 +281,14 @@ class VoxaCaptionsApp(QMainWindow):
         main_layout.addWidget(subtitle_label)
         
         # Audio file selection
-        file_group = QGroupBox("Audio File")
+        file_group = QGroupBox("Audio Files")
         file_layout = QVBoxLayout()
         
-        self.file_label = QLabel("No file selected")
+        self.file_label = QLabel("No files selected")
         self.file_label.setStyleSheet("padding: 10px; background: #f0f0f0; border-radius: 5px;")
         file_layout.addWidget(self.file_label)
         
-        self.browse_button = QPushButton("Browse Audio File")
+        self.browse_button = QPushButton("Browse Audio Files (Multiple Selection)")
         self.browse_button.setMinimumHeight(40)
         self.browse_button.clicked.connect(self.browse_audio_file)
         file_layout.addWidget(self.browse_button)
@@ -351,26 +392,36 @@ class VoxaCaptionsApp(QMainWindow):
         
         # Initial log message
         self.log("Welcome to Voxa-Captions!")
-        self.log("Select an audio file to get started.")
+        self.log("Select one or multiple audio files to get started.")
+        self.log("Files will be processed one after another and saved automatically.")
         
     def log(self, message):
         """Add a message to the log output"""
         self.log_text.append(f"[INFO] {message}")
         
     def browse_audio_file(self):
-        """Open file dialog to select an audio file"""
-        file_path, _ = QFileDialog.getOpenFileName(
+        """Open file dialog to select multiple audio files"""
+        file_paths, _ = QFileDialog.getOpenFileNames(
             self,
-            "Select Audio File",
+            "Select Audio Files (Multiple Selection Allowed)",
             "",
             "Audio Files (*.mp3 *.wav *.m4a *.flac *.ogg *.aac *.wma);;All Files (*.*)"
         )
         
-        if file_path:
-            self.audio_path = file_path
-            self.file_label.setText(f"Selected: {os.path.basename(file_path)}")
+        if file_paths:
+            self.audio_paths = file_paths
+            num_files = len(file_paths)
+            
+            if num_files == 1:
+                self.file_label.setText(f"Selected: {os.path.basename(file_paths[0])}")
+                self.log(f"Audio file selected: {os.path.basename(file_paths[0])}")
+            else:
+                self.file_label.setText(f"Selected {num_files} files")
+                self.log(f"{num_files} audio files selected:")
+                for file_path in file_paths:
+                    self.log(f"  • {os.path.basename(file_path)}")
+            
             self.generate_button.setEnabled(True)
-            self.log(f"Audio file selected: {os.path.basename(file_path)}")
             
     def get_model_name(self):
         """Extract model name from combo box selection"""
@@ -384,8 +435,8 @@ class VoxaCaptionsApp(QMainWindow):
     
     def generate_captions(self):
         """Start the caption generation process"""
-        if not self.audio_path:
-            QMessageBox.warning(self, "No File", "Please select an audio file first.")
+        if not self.audio_paths:
+            QMessageBox.warning(self, "No Files", "Please select audio files first.")
             return
         
         model_name = self.get_model_name()
@@ -422,13 +473,17 @@ class VoxaCaptionsApp(QMainWindow):
         self.progress_bar.setVisible(True)
         self.log_text.clear()
         
-        self.log(f"Starting transcription with model: {model_name}")
+        num_files = len(self.audio_paths)
+        self.log(f"Starting batch transcription of {num_files} file(s)")
+        self.log(f"Model: {model_name}")
         self.log(f"Language: {language}")
-        self.log("Please wait, this may take several minutes...")
+        self.log("Files will be processed one after another...")
+        self.log("Each file will be auto-saved in its original directory.")
+        self.log("")
         
         # Start transcription in background thread
         self.transcription_thread = TranscriptionThread(
-            self.audio_path,
+            self.audio_paths,
             model_name,
             language
         )
@@ -446,25 +501,18 @@ class VoxaCaptionsApp(QMainWindow):
         self.progress_bar.setVisible(False)
         
         if success:
-            self.log("=" * 50)
-            self.log("TRANSCRIPTION COMPLETED SUCCESSFULLY!")
-            self.log(f"Output file: {message}")
-            self.log("=" * 50)
-            
             QMessageBox.information(
                 self,
-                "Success",
-                f"Captions generated successfully!\n\nSaved to:\n{message}"
+                "Batch Processing Complete",
+                f"Caption generation finished!\n\n{message}\n\n"
+                f"All files have been saved in their original directories with .json extension."
             )
         else:
-            self.log("=" * 50)
-            self.log("TRANSCRIPTION FAILED")
-            self.log("=" * 50)
-            
-            QMessageBox.critical(
+            QMessageBox.warning(
                 self,
-                "Error",
-                f"Failed to generate captions:\n\n{message}"
+                "Batch Processing Completed with Errors",
+                f"Some files may have failed:\n\n{message}\n\n"
+                f"Check the log for details."
             )
 
 
